@@ -11,8 +11,12 @@ library(plotly)
 library(data.table)
 library(caret)
 library(foreach)
+library(titanic)
+library(naniar)
+library(xtable)
 
-setwd("/Users/philhenrickson/Dropbox/Titanic/")
+
+setwd("/Users/phenrickson/Dropbox/Titanic/")
 
 # read in data
 test<-titanic::titanic_test
@@ -26,24 +30,7 @@ full<-data.table(bind_rows(test, train))
 library(reshape2)
 library(ggplot2)
 
-ggplot_missing <- function(x){
-        
-        x %>% 
-                is.na %>%
-                melt %>%
-                ggplot(data = .,
-                       aes(x = Var2,
-                           y = Var1)) +
-                geom_raster(aes(fill = value)) +
-                scale_fill_grey(name = "",
-                                labels = c("Present","Missing")) +
-                theme_minimal() + 
-                theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + 
-                labs(x = "Variables in Dataset",
-                     y = "Rows / observations")
-}
-
-ggplot_missing(full)
+vis_miss(full, warn_large_data=F)
 
 # Lots of missigness on deck and age
 colSums(is.na(full))
@@ -221,17 +208,6 @@ ggplot(full[-which(is.na(full$Survived)),], aes(x=FsizeD, fill=factor(Survived))
         labs(x = 'Family Size') +
         theme_minimal()
 
-
-
-# 
-ggplot(full[-which(is.na(full$Survived)),], aes(x=Deck, fill=factor(TicketNumbers))) +
-        geom_bar(position='dodge')+
-        labs(x = 'Family Size') +
-        theme_minimal()
-
-
-
-
 ### Deal with Missingness ###
 
 # most missingness is on Age and Deck; very few missing in Fare, who is missing?
@@ -240,7 +216,8 @@ missingids_fare<-full[which(is.na(full$Fare)),]
 # examine fares of other passengers sharing his departure
 ggplot(filter(full, Pclass==3 & Embarked=='S'), aes(x=Fare))+
         geom_density() +
-        geom_vline(aes(xintercept=median(Fare, na.rm=T)))
+        geom_vline(aes(xintercept=median(Fare, na.rm=T))) +
+        theme_minimal()
 
 # check ticketnumbers around this guy
 as.numeric(missingids_fare$TicketNumbers)
@@ -254,7 +231,8 @@ full$Fare[full$PassengerId==missingids_fare$PassengerId]<-median(filter(full, Pc
 
 # inspect fare
 ggplot(full, aes(x=Fare))+
-        geom_histogram()
+        geom_histogram() +
+        theme_minimal()
 
 # make discrete Fare variable
 full$FareD<- train$FareD <- '30+'
@@ -287,7 +265,7 @@ ggplot(embark_fare, aes(x = Embarked, y = Fare, fill = factor(Pclass))) +
         geom_hline(aes(yintercept=median(missingids_embark$Fare)), 
                    colour='red', linetype='dashed', lwd=1) +
         scale_y_continuous(labels=dollar_format()) +
-        theme_few()
+        theme_minimal()
 
 # check surrounding ticket numbers, sorting by Deck
 filter(full, 
@@ -357,33 +335,28 @@ table(full$Mother, full$Survived)
 aggregate(Survived ~ Child + Sex, data=full, FUN=function(x) {sum(x)/length(x)})
 
 # 
-
 md.pattern(select(full, -one_of(omit_vars)))
 
+#
+vis_miss(full)
 
-ggplot_missing <- function(x){
-        
-        x %>% 
-                is.na %>%
-                melt %>%
-                ggplot(data = .,
-                       aes(x = Var2,
-                           y = Var1)) +
-                geom_raster(aes(fill = value)) +
-                scale_fill_grey(name = "",
-                                labels = c("Present","Missing")) +
-                theme_minimal() + 
-                theme(axis.text.x  = element_text(angle=45, vjust=0.5)) + 
-                labs(x = "Variables in Dataset",
-                     y = "Rows / observations")
-}
-
-ggplot_missing(full)
+full.clean<-full
+full.clean$Survived[which(full$Survived==1)]<-"Lived"
+full.clean$Survived[which(full$Survived==0)]<-"Died"
+full.clean$Survived[which(is.na(full$Survived))]<-"Missing"
 
 
+# write to csv
+write.csv(full.clean, file="titanicDat.csv")
+
+# done with prep
+# set up data sets
 train<-full[which(!is.na(full$Survived)),]
 test<-full[which(is.na(full$Survived)),]
 
+
+
+### Prediction Time
 # split training set into train and validation set
 set.seed(1999)
 split1 <- createDataPartition(train$Survived, p = .75)[[1]]
@@ -471,6 +444,7 @@ train_cforest<-suppressWarnings(train(y=factor(train_y),
                                       tuneLength=5,
                                       method="cforest"))
 
+varImp(train_cforest$finalModel)
 
 # output to kaggle
 lean_cforest_0310 <- data.frame(PassengerId = test$PassengerId, Survived = ifelse(predict(train_cforest, test)=='yes', 1, 0))
@@ -532,10 +506,6 @@ cforestPlot<-ggplot(bar, aes(x=mean, y=y.plot))+
 cforestPlot
 
 
-# repeat for Ranger
-
-
-
 # let's try an elastic net with the same oneSE rule given this subset of features
 set.seed(1999)
 train_glmnet<-suppressWarnings(train(Survived~.,
@@ -543,6 +513,7 @@ train_glmnet<-suppressWarnings(train(Survived~.,
                                       trControl=ctrl,
                                       tuneLength=10,
                                       method="glmnet"))
+
 
 # output to kaggle
 lean_glmnet_0311 <- data.frame(PassengerId = test$PassengerId, Survived = ifelse(predict(train_glmnet, test)=='yes', 1, 0))
@@ -575,7 +546,7 @@ plot_cforest<-ggplot(g, aes(x=as.numeric(PassengerId), y=cforest, color=Pclass, 
         ggtitle("Conditional Random Forest")+
         theme_few()
 
-plot_glmnet<-ggplot(g, aes(x=as.numeric(PassengerId), y=glmnet, color=Pclass, shape=Sex))+
+plot_glmnet<-ggplot(g, aes(x=as.numeric(PassengerId), y=glmnet, color=Plass, shape=Sex))+
         geom_point(alpha=0.75, size=3)+
         geom_hline(aes(yintercept=0.5))+
         xlab("PassngerId")+
@@ -793,226 +764,16 @@ ensemble_gbm<-suppressWarnings(train(obs~.,
                                      tuneLength=5,
                                      method="gbm"))
 
-models_ensemble<-lapply(ls(pattern="ensemble_"), get)
 
-# predict the holdout set
+# ensemble results
+
+
+# then, predict the holdout set
 v_preds<-foreach(i=1:length(stack_models), .combine=cbind) %do% {
         
-        foo<-as.matrix(predict.train(stack_models[[i]], v_train, type="prob")[,2])
+        foo<-as.matrix(predict.train(stack_models[[i]], test, type="prob")[,2])
         colnames(foo)<-stack_models[[i]]$method
         foo
 }
-
-rm(foo)
-
-v_ensemble<-foreach(i=1:length(models_ensemble), .combine=cbind) %do% {
-        hold<-predict(models_ensemble[[i]], v_preds, type="prob")[,2]
-        hold
-}
-colnames(v_ensemble)<-c("ensemble_glm", "ensemble_gbm")
-
-# bind into predictions with others
-v_final<-cbind.data.frame(v_preds, v_ensemble)
-
-# get results with 0.5 threshold
-foo_results<-do.call(rbind, apply(v_final, 2, getResults, y=v_train$Survived, cut=0.5))
-v_results<-as.tbl(cbind.data.frame(data.frame(model=names(v_final)), foo_results))
-
-arrange(v_results, accuracy)
-
-# examine accuracy over different cutpoints
-cuts<-seq(0, 1, 0.02)
-
-# this is really annoying
-do.call(rbind, apply(v_final, 2, getResults, y=cv_obs, cut=0.5))
-
-
-cuts_results<-foreach(i=1:ncol(v_final), .combine=cbind) %do% {
-        hold<-foreach(j=1:length(cuts), .combine=rbind) %do% {
-                foo<-getResults(v_final[,i], y=v_train$Survived, cut=cuts[j])
-                out<-select(foo, accuracy)
-                colnames(out)<-c(colnames(v_final[i]))
-                out
-        }
-        hold
-}
-
-cuts_accuracy<-cbind(cuts, cuts_results)
-
-# what cutpoint maximizes the accuracy of the Ensembled GBM? Ensemble GLM?
-cut_gbm<-data.frame(cuts = cuts_accuracy[which(cuts_accuracy$ensemble_gbm==max(cuts_accuracy$ensemble_gbm)),]$cuts,
-                    accuracy=max(cuts_accuracy$ensemble_gbm))
-
-cut_glm<-data.frame(cuts = cuts_accuracy[which(cuts_accuracy$ensemble_glm==max(cuts_accuracy$ensemble_glm)),]$cuts,
-                    accuracy=max(cuts_accuracy$ensemble_glm))
-
-g1<-ggplot(cuts_accuracy, aes(x=cuts, y=ensemble_gbm)) +
-        geom_line()+
-        labs(y="Accuracy", x="Cutpoint")+
-        ggtitle("Ensemble - GBM")+
-        geom_vline(xintercept=cut_gbm[1,1])+
-        theme_bw()
-
-g2<-ggplot(cuts_accuracy, aes(x=cuts, y=ensemble_glm)) +
-        geom_line()+
-        labs(y="Accuracy", x="Cutpoint")+
-        ggtitle("Ensemble - GLM")+
-        geom_vline(xintercept=cut_glm[1,1])+
-        theme_bw()
-
-grid.arrange(g1, g2, ncol=1)
-
-
-# refit all models to entirety of training data
-# KNN
-set.seed(1999)
-final_knn<-suppressWarnings(train(Survived~.,
-                                  data=dplyr::select(train, -FamilyID2),
-                                  trControl=ctrl,
-                                  tuneLength=10,
-                                  method="knn", 
-                                  preProcess=c("center", "scale")))
-
-# Elastic Net
-set.seed(1999)
-final_glmnet<-suppressWarnings(train(Survived~.,
-                                     data=dplyr::select(train, -FamilyID2),
-                                     trControl=ctrl,
-                                     tuneLength=10,
-                                     method="glmnet"))
-
-# Boosted Logit
-set.seed(1999)
-final_LogitBoost<-suppressWarnings(train(Survived~.,
-                                         data=dplyr::select(train, -FamilyID2),
-                                         trControl=ctrl,
-                                         tuneLength=50,
-                                         method="LogitBoost"))
-
-# CART
-set.seed(1999)
-final_cart<-suppressWarnings(train(Survived~.,
-                                   data=dplyr::select(train, -FamilyID2),
-                                   trControl=ctrl,
-                                   tuneLength=10,
-                                   method="rpart"))
-
-# boosted trees
-set.seed(1999)
-final_gbm<-suppressWarnings(train(y=train_y,
-                                  x=dplyr::select(train_x, -FamilyID),
-                                  trControl=ctrl,
-                                  tuneLength=5,
-                                  method="gbm"))
-
-
-# ranger
-set.seed(1999)
-final_ranger<-suppressWarnings(train(y=train_y,
-                                     x=dplyr::select(train_x, -FamilyID),
-                                     trControl=ctrl,
-                                     tuneLength=5,
-                                     importance="permutation",
-                                     method="ranger"))
-
-# Cforest
-set.seed(1999)
-final_cforest<-suppressWarnings(train(y=train_y,
-                                      x=dplyr::select(train_x, -FamilyID),
-                                      trControl=ctrl,
-                                      tuneLength=5,
-                                      method="cforest"))
-
-# SVM Radial
-set.seed(1999)
-final_svm<-suppressWarnings(train(Survived~.,
-                                  data=dplyr::select(train, -FamilyID2),
-                                  trControl=ctrl,
-                                  tuneLength=5,
-                                  method="svmRadialWeights",
-                                  preProcess=c("center", "scale")))
-
-
-# gather models into a list
-final_models<-lapply(ls(pattern="final_"), get)
-
-# turn into ensemble
-# Grab the outcome from the training CV
-final_obs<-as.matrix((final_models[[1]]$pred) %>%
-                          arrange(rowIndex) %>%
-                          dplyr::select(obs))
-
-### grab out of sample predictions from the stacking CV
-final_preds<-as.tbl(foreach(i=1:length(final_models), .combine=cbind.data.frame) %do% {
-        
-        bar <- as.tbl(final_models[[i]]$pred) %>% 
-                arrange(rowIndex) %>% 
-                dplyr::select(yes)
-        
-        colnames(bar)<-final_models[[i]]$method
-        bar
-        
-})
-
-# run ensemble models
-final_stack<-data.table(final_preds, final_obs)
-
-# GLM
-set.seed(1999)
-fensemble_glm<-suppressWarnings(train(obs~.,
-                                     data=final_stack,
-                                     trControl=ctrl,
-                                     tuneLength=5,
-                                     method="glm"))
-
-# GBM
-set.seed(1999)
-fensemble_gbm<-suppressWarnings(train(obs~.,
-                                     data=final_stack,
-                                     trControl=ctrl,
-                                     tuneLength=5,
-                                     method="gbm"))
-
-fensemble_models<-lapply(ls(pattern="fensemble_"), get)
-
-
-
-# predict the test set
-test_preds<-foreach(i=1:length(final_models), .combine=cbind) %do% {
-        
-        foo<-as.matrix(predict.train(final_models[[i]], test, type="prob")[,2])
-        colnames(foo)<-final_models[[i]]$method
-        foo
-}
-
-test_ensemble<-foreach(i=1:length(fensemble_models), .combine=cbind) %do% {
-        hold<-predict(fensemble_models[[i]], test_preds, type="prob")[,2]
-        hold
-}
-colnames(test_ensemble)<-c("ensemble_glm", "ensemble_gbm")
-
-
-# predict with ensemble
-test_ensemble<-as.tbl(foreach(i=1:length(models_ensemble), .combine=cbind.data.frame) %do% {
-        hold<-predict.train(models_ensemble[[i]], test_preds, type="prob")[,2]
-        hold
-})
-colnames(test_ensemble)<-c("ensemble_glm", "ensemble_gbm")
-
-
-# output with cutpoints as determined by holdout set
-ensemble_glm_0312<-data.frame(PassengerId = test$PassengerId, Survived = ifelse(test_ensemble$ensemble_glm > cut_glm[1,1], 1, 0))
-write.csv(ensemble_glm_0312, file = "Submissions/ensemble_glm_0312.csv", row.names = FALSE)
-
-
-# output with cutpoints as determined by holdout set
-ensemble_gbm_0312<-data.frame(PassengerId = test$PassengerId, Survived = ifelse(test_ensemble$ensemble_gbm > cut_gbm[1,1], 1, 0))
-write.csv(ensemble_gbm_0312, file = "Submissions/ensemble_gbm_0312.csv", row.names = FALSE)
-
-# ensembling doing okay, but not quite as well as cforest
-# why is that?
-
-# well, it's possible that this is just because we have similar, stable learners;
-# ultimately, we would like it if we had models which were not correlated at all
 
 
